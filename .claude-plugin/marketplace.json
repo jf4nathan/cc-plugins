@@ -1,0 +1,27 @@
+{
+  "name": "cc-plugins",
+  "owner": {
+    "name": "Jonathan Tang",
+    "email": "jonathan.y.tang@gmail.com"
+  },
+  "metadata": {
+    "title": "cc-plugins",
+    "description": "A small marketplace of Claude Code plugins."
+  },
+  "plugins": [
+    {
+      "name": "statusline",
+      "version": "0.7.0",
+      "description": "Two-line Claude Code statusline: directory, git branch, model, effort, context %, session cost, and time since last response.",
+      "source": "./plugins/statusline/",
+      "author": {
+        "name": "Jonathan Tang",
+        "email": "jonathan.y.tang@gmail.com"
+      },
+      "skills": [
+        "./skills/setup",
+        "./skills/update"
+      ]
+    }
+  ]
+}
