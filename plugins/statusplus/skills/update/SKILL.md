@@ -1,6 +1,6 @@
 ---
 name: update
-description: Sync the statusline plugin's deployed scripts (~/.claude/bin/statusline.sh and cost-display.py) with the current plugin version. Run this after a plugin update to pick up script changes. Detects user customizations and asks before overwriting them.
+description: Sync the statusplus plugin's deployed scripts (~/.claude/bin/statusline.sh and cost-display.py) with the current plugin version. Run this after a plugin update to pick up script changes. Detects user customizations and asks before overwriting them.
 ---
 
 # Statusline Update

@@ -1,4 +1,4 @@
-# statusline
+# statusplus
 
 A two-line Claude Code statusline that surfaces the things you actually want to know at a glance: where you are, what model you're on, how much context and money you've burned, and how long since Claude last replied.
 
@@ -8,8 +8,8 @@ Add the marketplace once, then install the plugin:
 
 ```
 /plugin marketplace add jf4nathan/cc-plugins
-/plugin install statusline@cc-plugins
-/statusline:setup
+/plugin install statusplus@cc-plugins
+/statusplus:setup
 ```
 
 Restart Claude Code. Done. The setup skill copies the scripts to `~/.claude/bin/`, writes the `statusLine` block into `~/.claude/settings.json` automatically (with a backup), and tells you to restart.
@@ -70,7 +70,7 @@ Want a different layout, color scheme, or to add/remove fields? **The fastest wa
 
 The script is plain bash + python and is already documented inline. Claude can read it, make the change, and you just restart Claude Code to see the result.
 
-> **Picking up plugin updates.** The plugin's bundled scripts are *copied* into `~/.claude/bin/` at install time, so customizations there are yours and won't be overwritten. After `/plugin marketplace update cc-plugins` (or any plugin upgrade), run `/statusline:update` to sync the deployed copies with the plugin's latest. The skill detects local edits and asks before replacing them — so you can keep your customizations and update only the files you haven't touched.
+> **Picking up plugin updates.** The plugin's bundled scripts are *copied* into `~/.claude/bin/` at install time, so customizations there are yours and won't be overwritten. After `/plugin marketplace update cc-plugins` (or any plugin upgrade), run `/statusplus:update` to sync the deployed copies with the plugin's latest. The skill detects local edits and asks before replacing them — so you can keep your customizations and update only the files you haven't touched.
 
 ### Available data fields
 
@@ -100,8 +100,8 @@ For the full schema, see Anthropic's [statusline docs](https://code.claude.com/d
 ## How it works
 
 - **hooks.json** registers a `Stop` hook (writes last-response epoch) and a `SessionStart` hook (cost baseline reset on `/clear`, carry update on `/resume`, plus state pruning) — these activate automatically on install
-- **setup skill** (`/statusline:setup`) copies `statusline.sh` and `cost-display.py` to `~/.claude/bin/` and patches `~/.claude/settings.json` to wire it up. Hook scripts run directly from the plugin root, so they update with the plugin automatically
-- **update skill** (`/statusline:update`) re-syncs the deployed `statusline.sh` and `cost-display.py` with the plugin's latest, prompting before overwriting any customizations
+- **setup skill** (`/statusplus:setup`) copies `statusline.sh` and `cost-display.py` to `~/.claude/bin/` and patches `~/.claude/settings.json` to wire it up. Hook scripts run directly from the plugin root, so they update with the plugin automatically
+- **update skill** (`/statusplus:update`) re-syncs the deployed `statusline.sh` and `cost-display.py` with the plugin's latest, prompting before overwriting any customizations
 - **refreshInterval: 30** makes the "ago" counter tick every 30 seconds without needing to hit Enter
 - The "ago" clock is keyed by session ID (PPID fallback) so each Claude Code window has its own independent timer
 

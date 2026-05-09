@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Fully install the statusline. Copies scripts to ~/.claude/bin/, writes the statusLine block into ~/.claude/settings.json, and tells the user to restart. Run once after installing the plugin.
+description: Fully install the statusplus plugin. Copies scripts to ~/.claude/bin/, writes the statusLine block into ~/.claude/settings.json, and tells the user to restart. Run once after installing the plugin.
 ---
 
 # Statusline Setup
@@ -75,7 +75,7 @@ if p.exists():
     except json.JSONDecodeError as e:
         print(f"ERROR: ~/.claude/settings.json is not valid JSON: {e}", file=sys.stderr)
         print(f"A backup was saved to {backup}.", file=sys.stderr)
-        print("Fix the file (the statusline plugin doesn't support comments or trailing commas) and re-run /statusline:setup.", file=sys.stderr)
+        print("Fix the file (the statusplus plugin doesn't support comments or trailing commas) and re-run /statusplus:setup.", file=sys.stderr)
         sys.exit(2)
 else:
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -94,7 +94,7 @@ The write step:
 - Backs up the existing `settings.json` with a timestamped `.bak.YYYYMMDDHHMMSS` suffix.
 - Adds (or replaces) only the `statusLine` key, preserving all other settings.
 - Creates the file if it doesn't exist.
-- If `settings.json` is malformed (trailing comma, JSONC comments, etc.) the script prints a clear error pointing at the backup and exits non-zero — it does **not** overwrite the file with a default. If you see this error, fix the JSON and re-run `/statusline:setup`.
+- If `settings.json` is malformed (trailing comma, JSONC comments, etc.) the script prints a clear error pointing at the backup and exits non-zero — it does **not** overwrite the file with a default. If you see this error, fix the JSON and re-run `/statusplus:setup`.
 
 ### 3. Tell the user to restart
 

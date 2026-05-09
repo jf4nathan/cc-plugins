@@ -1,5 +1,5 @@
 {
-  "name": "statusline",
+  "name": "statusplus",
   "description": "Two-line Claude Code statusline showing dir, git branch, model, effort, context %, session cost, and time since last response. Bonus: Salesforce org indicator if a .sf/config.json is present.",
   "version": "0.7.0",
   "author": {
@@ -7,6 +7,7 @@
     "email": "jonathan.y.tang@gmail.com"
   },
   "keywords": [
+    "statusplus",
     "statusline",
     "context",
     "cost",

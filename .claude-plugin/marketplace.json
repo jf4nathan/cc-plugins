@@ -10,10 +10,10 @@
   },
   "plugins": [
     {
-      "name": "statusline",
+      "name": "statusplus",
       "version": "0.7.0",
       "description": "Two-line Claude Code statusline: directory, git branch, model, effort, context %, session cost, and time since last response.",
-      "source": "./plugins/statusline/",
+      "source": "./plugins/statusplus/",
       "author": {
         "name": "Jonathan Tang",
         "email": "jonathan.y.tang@gmail.com"
