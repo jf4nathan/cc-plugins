@@ -1,11 +1,11 @@
 ---
-name: update
-description: Sync the statusplus plugin's deployed scripts (~/.claude/bin/statusline.sh and cost-display.py) with the current plugin version. Run this after a plugin update to pick up script changes. Detects user customizations and asks before overwriting them.
+name: statusplus-update
+description: Sync the statusplus plugin's deployed scripts (~/.claude/bin/statusline.sh, cost-display.py, and llm-summary.py) with the current plugin version. Run this after a plugin update to pick up script changes. Detects user customizations and asks before overwriting them.
 ---
 
 # Statusline Update
 
-Re-deploy `statusline.sh` and `cost-display.py` from the plugin to `~/.claude/bin/`. Use this after upgrading the plugin (e.g. `/plugin marketplace update cc-plugins`) to pick up new script behavior.
+Re-deploy `statusline.sh`, `cost-display.py`, and `llm-summary.py` from the plugin to `~/.claude/bin/`. Use this after upgrading the plugin (e.g. `/plugin marketplace update cc-plugins`) to pick up new script behavior.
 
 ## Why this is a separate skill
 
@@ -31,7 +31,7 @@ def sha(p):
     return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
 
 statuses = {}
-for name in ("statusline.sh", "cost-display.py"):
+for name in ("statusline.sh", "cost-display.py", "llm-summary.py"):
     src, dst = plugin_scripts / name, bin_dir / name
     src_h, dst_h = sha(src), sha(dst)
     if dst_h is None:
@@ -103,7 +103,45 @@ PY
 
 Pass the file names the user approved (and any `MISSING` files) as positional args.
 
-### 4. Tell the user the result
+### 4. Patch config.json with any missing fields
+
+If `~/.claude/.statusplus/config.json` exists, add any fields that are present in the current defaults but missing from the user's config. Never overwrite existing values.
+
+```bash
+python3 - <<'PY'
+import json, os, pathlib
+
+DEFAULTS = {
+    "head_messages": 2,
+    "tail_messages": 6,
+    "max_tokens": 30,
+    "timeout_s": 8,
+    "cache_ttl_s": 60,
+}
+
+p = pathlib.Path(os.path.expanduser("~/.claude/.statusplus/config.json"))
+if not p.exists():
+    print("NO_CONFIG")
+else:
+    cfg = json.loads(p.read_text(encoding='utf-8'))
+    added = {}
+    for k, v in DEFAULTS.items():
+        if k not in cfg:
+            cfg[k] = v
+            added[k] = v
+    if added:
+        p.write_text(json.dumps(cfg, indent=2) + "\n", encoding='utf-8')
+        print("PATCHED: " + ", ".join(f"{k}={v}" for k, v in added.items()))
+    else:
+        print("CONFIG_OK")
+PY
+```
+
+- `PATCHED`: tell the user which fields were added and their values.
+- `CONFIG_OK`: no output needed, config was already complete.
+- `NO_CONFIG`: skip silently — they haven't configured the LLM headline.
+
+### 5. Tell the user the result
 
 Summarize what was updated, what was kept, and where backups went. If anything was updated, remind them: "Restart Claude Code to pick up the changes."
 

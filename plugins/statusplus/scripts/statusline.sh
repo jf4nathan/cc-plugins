@@ -1,29 +1,86 @@
 #!/usr/bin/env bash
-# Claude Code statusLine script - part of the statusline plugin.
-# Called by settings.json "statusLine.command" after running /statusline:setup.
+# Claude Code statusLine script - part of the statusplus plugin.
+# Called by settings.json "statusLine.command" after running /statusplus:statusplus-setup.
 
 input=$(cat)
 # Parse all fields in a single python pass, output as unit-separator-delimited values.
-IFS=$'\x1f' read -r current_dir model_name ctx_pct effort session_id worktree over200k <<< "$(echo "$input" | python3 -c "
-import sys, json
+IFS=$'\x1f' read -r current_dir model_name ctx_pct effort session_id worktree over200k used_tokens <<< "$(echo "$input" | python3 -c "
+import sys, json, re
 d = json.load(sys.stdin)
-ctx = d.get('context_window',{}).get('used_percentage')
+ctx = d.get('context_window',{})
+ctx_pct = ctx.get('used_percentage')
+raw = d.get('model',{}).get('display_name','') or ''
+m = re.sub(r'^[Cc]laude[- ]', '', raw)
+if re.match(r'^[a-z]+-\d', m):
+    parts = m.split('-')
+    m = parts[0].title() + ' ' + '.'.join(parts[1:])
+m = re.sub(r'\s*\((\d+[kKmM])\s+context\)', r' \1', m)
 fields = [
     d.get('workspace',{}).get('current_dir','') or d.get('cwd',''),
-    d.get('model',{}).get('display_name',''),
-    str(int(ctx)) if ctx is not None else '',
+    m.strip(),
+    str(int(ctx_pct)) if ctx_pct is not None else '',
     d.get('effort',{}).get('level','') or '',
     d.get('session_id','') or '',
     d.get('workspace',{}).get('git_worktree','') or '',
     '1' if d.get('exceeds_200k_tokens') else '',
+    str(int(ctx.get('used_tokens',0))),
 ]
 print('\x1f'.join(fields))
 " 2>/dev/null)"
 ctx_pct_display="${ctx_pct:-?}"
 
+case "$effort" in
+    low)    effort="lo"  ;;
+    medium) effort="med" ;;
+    high)   effort="hi"  ;;
+    xhigh)  effort="xhi" ;;
+esac
+
+
 COST_SCRIPT="$HOME/.claude/bin/cost-display.py"
 session_cost=$(echo "$input" | python3 "$COST_SCRIPT" 2>/dev/null)
-branch=$(cd "$current_dir" 2>/dev/null && git -c core.fsmonitor=false branch --show-current 2>/dev/null)
+
+# Run a git command with a 3s wall-clock timeout if `timeout` is available
+# (coreutils). Falls back to bare git otherwise. Returns git's stdout or
+# empty on timeout/error. All callers pass `-c core.fsmonitor=false` to
+# avoid waiting on an unresponsive fsmonitor daemon.
+git_with_timeout() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 3 git "$@"
+    else
+        git "$@"
+    fi
+}
+
+# Compact git status segment for line 1: "+A/-R/++N (U)".
+#   +A/-R  added/removed lines vs HEAD (numstat sum)
+#   ++N    lines in untracked files (xargs wc -l)
+#   (U)    unpushed commits ahead of @{upstream}
+# Each segment renders only when non-zero. Returns empty on no-git, no
+# upstream, or all-zero state -- caller decides whether to print.
+git_status() {
+    local dir="$1"
+    [ -z "$dir" ] && return
+    local diff added removed untracked unpushed out
+    diff=$(git_with_timeout -C "$dir" -c core.fsmonitor=false diff --numstat HEAD 2>/dev/null)
+    added=$(awk '{a+=$1} END{print a+0}' <<<"$diff")
+    removed=$(awk '{r+=$2} END{print r+0}' <<<"$diff")
+    untracked=$(cd "$dir" 2>/dev/null && git_with_timeout -c core.fsmonitor=false ls-files --others --exclude-standard 2>/dev/null | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1+0}')
+    unpushed=$(git_with_timeout -C "$dir" -c core.fsmonitor=false rev-list --count @{upstream}..HEAD 2>/dev/null)
+    out=""
+    if [ "${added:-0}" -gt 0 ] || [ "${removed:-0}" -gt 0 ]; then
+        out="+${added}/-${removed}"
+    fi
+    if [ "${untracked:-0}" -gt 0 ]; then
+        [ -n "$out" ] && out="${out}/++${untracked}" || out="++${untracked}"
+    fi
+    if [ -n "$unpushed" ] && [ "$unpushed" -gt 0 ] 2>/dev/null; then
+        [ -n "$out" ] && out="${out} (${unpushed})" || out="(${unpushed})"
+    fi
+    echo "$out"
+}
+
+branch=$(cd "$current_dir" 2>/dev/null && git_with_timeout -c core.fsmonitor=false branch --show-current 2>/dev/null)
 
 # Format a unix epoch as "M/D Day H:MM AM/PM" — portable across macOS (BSD) and Linux.
 fmt_epoch() {
@@ -32,7 +89,7 @@ import datetime, sys
 t = datetime.datetime.fromtimestamp(int(sys.argv[1]))
 h = t.hour % 12 or 12
 ampm = 'AM' if t.hour < 12 else 'PM'
-print(f'{t.month}/{t.day} {t.strftime(\"%a\")} {h}:{t.minute:02d} {ampm}')
+print(f'{t.month}/{t.day} {h}:{t.minute:02d} {ampm}')
 " "$1" 2>/dev/null
 }
 
@@ -58,7 +115,7 @@ if [ -n "$session_id" ]; then
         if [ $delta -lt 60 ]; then
             age="${delta}s"
         elif [ $delta -lt 3600 ]; then
-            age="$((delta / 60))min"
+            age="$((delta / 60))m"
         else
             age="$((delta / 3600))h$(((delta % 3600) / 60))m"
         fi
@@ -84,12 +141,35 @@ if [ -n "$session_id" ]; then
 fi
 
 # Line 1: dir + worktree + branch + sf org
-printf '\033[1m%s\033[0m' "$(basename "$current_dir")"
+# In a linked worktree, the harness's `git_worktree`, the cwd basename, and the
+# branch often collapse to the same string. Surface the origin repo basename
+# instead and dedupe `[branch]` when it matches the worktree name.
+origin_basename=""
 if [ -n "$worktree" ]; then
-    printf '  \033[35m⌥%s\033[0m' "$worktree"
+    common_dir=$(cd "$current_dir" 2>/dev/null && git -c core.fsmonitor=false rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    [ -n "$common_dir" ] && origin_basename=$(basename "$(dirname "$common_dir")")
 fi
+
+if [ -n "$worktree" ] && [ -n "$origin_basename" ] && [ "$origin_basename" != "$worktree" ]; then
+    printf '\033[1m%s\033[0m' "$origin_basename"
+    printf '  \033[35m⌥%s\033[0m' "$worktree"
+    if [ -n "$branch" ] && [ "$branch" != "$worktree" ]; then
+        printf '  [\033[36m%s\033[0m]' "$branch"
+    fi
+else
+    printf '\033[1m%s\033[0m' "$(basename "$current_dir")"
+    if [ -n "$worktree" ]; then
+        printf '  \033[35m⌥%s\033[0m' "$worktree"
+    fi
+    if [ -n "$branch" ]; then
+        printf '  [\033[36m%s\033[0m]' "$branch"
+    fi
+fi
+
+# Compact git status: "+A/-R/++N (U)". Silent when no-git or all-zero.
 if [ -n "$branch" ]; then
-    printf '  [\033[36m%s\033[0m]' "$branch"
+    git_st=$(git_status "$current_dir")
+    [ -n "$git_st" ] && printf '  \033[90m%s\033[0m' "$git_st"
 fi
 
 sf_info=$(python3 -c "
@@ -147,20 +227,45 @@ printf '\n'
 
 # Line 2: model + effort + ctx + cost + start_ts + age
 if [ -n "$model_name" ]; then
-    printf '\033[33m%s\033[0m' "$model_name"
+    printf '\033[34m%s\033[0m' "$model_name"
 fi
 if [ -n "$effort" ]; then
     printf '  \033[34m[%s]\033[0m' "$effort"
 fi
-# Context % - turns red past 80%, plus a warning when over 200k tokens
-ctx_color="35"
-if [ -n "$ctx_pct" ] && [ "$ctx_pct" -ge 80 ] 2>/dev/null; then ctx_color="1;31"; fi
-printf '  \033[%smctx:%s%%\033[0m' "$ctx_color" "$ctx_pct_display"
-[ -n "$over200k" ] && printf ' \033[1;31m⚠\033[0m'
+ctx_bar=$(python3 -c "
+pct = int('${ctx_pct}') if '${ctx_pct}'.isdigit() else 0
+tokens = int('${used_tokens}') if '${used_tokens}'.isdigit() else 0
+width = 12
+filled = round(width * pct / 100)
+bar = '▓' * filled + '▒' * (width - filled)
+if tokens >= 400000 or pct >= 80:
+    color = '1;31'
+elif tokens >= 200000:
+    color = '33'
+else:
+    color = '35'
+print(f'\033[{color}m{bar} {pct}%\033[0m')
+" 2>/dev/null)
+printf '  %s' "${ctx_bar:-ctx:${ctx_pct_display}%}"
 if [ -n "$session_cost" ]; then
-    printf '  \033[36mcost:$%s\033[0m' "$session_cost"
+    printf '  \033[36m$%s\033[0m' "$session_cost"
 fi
-printf '  \033[37m%s\033[0m' "${start_ts:-$(fmt_epoch "$(date +%s)")}"
-if [ -n "$age" ]; then
-    printf ' \033[%sm(%s ago)\033[0m' "${age_color:-90}" "$age"
+if [ -n "$age" ] && [ "${delta:-0}" -lt 86400 ]; then
+    printf '  \033[%sm(%s)\033[0m' "${age_color:-90}" "$age"
+elif [ -n "$start_ts" ]; then
+    printf '  \033[%sm%s\033[0m' "${age_color:-90}" "$start_ts"
+else
+    printf '  \033[37m%s\033[0m' "$(fmt_epoch "$(date +%s)")"
+fi
+
+# Line 3: LLM-generated headline (optional, opt-in via /statusplus:statusplus-llm-setup).
+# llm-summary.py prints the cached headline instantly and spawns a detached
+# background refresh if stale. If not configured, it prints nothing and we
+# stay at two lines.
+LLM_SCRIPT="$HOME/.claude/bin/llm-summary.py"
+if [ -f "$LLM_SCRIPT" ]; then
+    headline=$(echo "$input" | python3 "$LLM_SCRIPT" 2>/dev/null)
+    if [ -n "$headline" ]; then
+        printf '\n\033[3;33m%s\033[0m' "$headline"
+    fi
 fi

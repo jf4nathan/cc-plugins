@@ -1,6 +1,6 @@
 ---
-name: setup
-description: Fully install the statusplus plugin. Copies scripts to ~/.claude/bin/, writes the statusLine block into ~/.claude/settings.json, and tells the user to restart. Run once after installing the plugin.
+name: statusplus-setup
+description: Fully install the statusline. Copies scripts to ~/.claude/bin/, writes the statusLine block into ~/.claude/settings.json, and tells the user to restart. Run once after installing the plugin.
 ---
 
 # Statusline Setup
@@ -15,13 +15,14 @@ Run all three steps in order. Do not skip step 2.
 
 ```bash
 mkdir -p "$HOME/.claude/bin"
-cp "${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh" "$HOME/.claude/bin/statusline.sh"
+cp "${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh"   "$HOME/.claude/bin/statusline.sh"
 cp "${CLAUDE_PLUGIN_ROOT}/scripts/cost-display.py" "$HOME/.claude/bin/cost-display.py"
+cp "${CLAUDE_PLUGIN_ROOT}/scripts/llm-summary.py"  "$HOME/.claude/bin/llm-summary.py"
 chmod +x "$HOME/.claude/bin/statusline.sh"
 echo "Scripts installed."
 ```
 
-`statusline.sh` and `cost-display.py` are copied to `~/.claude/bin/` so they survive plugin updates without requiring a re-run of setup. The Stop/SessionStart/UserPromptSubmit hook scripts (`write-stop-epoch.py`, `clear-cost-baseline.py`) are invoked directly from the plugin root via `${CLAUDE_PLUGIN_ROOT}` in hooks.json, so they update automatically with the plugin.
+`statusline.sh`, `cost-display.py`, and `llm-summary.py` are copied to `~/.claude/bin/` so they survive plugin updates without requiring a re-run of setup. (`llm-summary.py` is dormant until the user runs `/statusplus:statusplus-llm-setup` — its presence alone adds no behavior.) The Stop/SessionStart/UserPromptSubmit hook scripts (`write-stop-epoch.py`, `clear-cost-baseline.py`) are invoked directly from the plugin root via `${CLAUDE_PLUGIN_ROOT}` in hooks.json, so they update automatically with the plugin.
 
 ### 2. Patch ~/.claude/settings.json with the statusLine block
 
@@ -35,7 +36,7 @@ import json, os, pathlib
 p = pathlib.Path(os.path.expanduser("~/.claude/settings.json"))
 if p.exists():
     try:
-        d = json.loads(p.read_text())
+        d = json.loads(p.read_text(encoding='utf-8'))
     except Exception:
         d = {}
     existing = d.get("statusLine")
@@ -55,7 +56,7 @@ If the output starts with `EXISTING_STATUSLINE_FOUND`, ask the user (a numbered 
 > ```json
 > { ...existing config... }
 > ```
-> Replace it with the statusline plugin's config? A timestamped backup will be written either way.
+> Replace it with this plugin's config? A timestamped backup will be written either way.
 > 1. Yes, replace it
 > 2. No, leave it alone (cancel setup)
 
@@ -71,11 +72,11 @@ if p.exists():
     backup = p.with_suffix(p.suffix + ".bak." + datetime.datetime.now().strftime("%Y%m%d%H%M%S"))
     shutil.copy2(p, backup)
     try:
-        d = json.loads(p.read_text())
+        d = json.loads(p.read_text(encoding='utf-8'))
     except json.JSONDecodeError as e:
         print(f"ERROR: ~/.claude/settings.json is not valid JSON: {e}", file=sys.stderr)
         print(f"A backup was saved to {backup}.", file=sys.stderr)
-        print("Fix the file (the statusplus plugin doesn't support comments or trailing commas) and re-run /statusplus:setup.", file=sys.stderr)
+        print("Fix the file (the statusplus plugin doesn't support comments or trailing commas) and re-run /statusplus:statusplus-setup.", file=sys.stderr)
         sys.exit(2)
 else:
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -85,7 +86,7 @@ d["statusLine"] = {
     "command": 'bash "$HOME/.claude/bin/statusline.sh"',
     "refreshInterval": 30,
 }
-p.write_text(json.dumps(d, indent=2) + "\n")
+p.write_text(json.dumps(d, indent=2) + "\n", encoding='utf-8')
 print(f"statusLine block written to {p}")
 PY
 ```
@@ -94,7 +95,7 @@ The write step:
 - Backs up the existing `settings.json` with a timestamped `.bak.YYYYMMDDHHMMSS` suffix.
 - Adds (or replaces) only the `statusLine` key, preserving all other settings.
 - Creates the file if it doesn't exist.
-- If `settings.json` is malformed (trailing comma, JSONC comments, etc.) the script prints a clear error pointing at the backup and exits non-zero — it does **not** overwrite the file with a default. If you see this error, fix the JSON and re-run `/statusplus:setup`.
+- If `settings.json` is malformed (trailing comma, JSONC comments, etc.) the script prints a clear error pointing at the backup and exits non-zero — it does **not** overwrite the file with a default. If you see this error, fix the JSON and re-run `/statusplus:statusplus-setup`.
 
 ### 3. Tell the user to restart
 

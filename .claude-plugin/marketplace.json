@@ -11,7 +11,7 @@
   "plugins": [
     {
       "name": "statusplus",
-      "version": "0.7.0",
+      "version": "1.3.3",
       "description": "Two-line Claude Code statusline: directory, git branch, model, effort, context %, session cost, and time since last response.",
       "source": "./plugins/statusplus/",
       "author": {
@@ -19,8 +19,9 @@
         "email": "jonathan.y.tang@gmail.com"
       },
       "skills": [
-        "./skills/setup",
-        "./skills/update"
+        "./skills/statusplus-setup",
+        "./skills/statusplus-update",
+        "./skills/statusplus-llm-setup"
       ]
     }
   ]
