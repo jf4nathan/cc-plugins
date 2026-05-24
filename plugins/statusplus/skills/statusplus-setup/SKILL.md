@@ -18,9 +18,11 @@ mkdir -p "$HOME/.claude/bin"
 cp "${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh"   "$HOME/.claude/bin/statusline.sh"
 cp "${CLAUDE_PLUGIN_ROOT}/scripts/cost-display.py" "$HOME/.claude/bin/cost-display.py"
 cp "${CLAUDE_PLUGIN_ROOT}/scripts/llm-summary.py"  "$HOME/.claude/bin/llm-summary.py"
-chmod +x "$HOME/.claude/bin/statusline.sh"
+chmod +x "$HOME/.claude/bin/statusline.sh" 2>/dev/null || true
 echo "Scripts installed."
 ```
+
+On Windows (MINGW/Git Bash), `chmod +x` is a no-op — the `|| true` keeps setup from failing.
 
 `statusline.sh`, `cost-display.py`, and `llm-summary.py` are copied to `~/.claude/bin/` so they survive plugin updates without requiring a re-run of setup. (`llm-summary.py` is dormant until the user runs `/statusplus:statusplus-llm-setup` — its presence alone adds no behavior.) The Stop/SessionStart/UserPromptSubmit hook scripts (`write-stop-epoch.py`, `clear-cost-baseline.py`) are invoked directly from the plugin root via `${CLAUDE_PLUGIN_ROOT}` in hooks.json, so they update automatically with the plugin.
 
@@ -81,9 +83,15 @@ if p.exists():
 else:
     p.parent.mkdir(parents=True, exist_ok=True)
     d = {}
+import platform, shutil
+if platform.system() == "Windows":
+    bash = (shutil.which("bash") or "bash").replace("\\", "/")
+    cmd = f'{bash} "$HOME/.claude/bin/statusline.sh"'
+else:
+    cmd = 'bash "$HOME/.claude/bin/statusline.sh"'
 d["statusLine"] = {
     "type": "command",
-    "command": 'bash "$HOME/.claude/bin/statusline.sh"',
+    "command": cmd,
     "refreshInterval": 30,
 }
 p.write_text(json.dumps(d, indent=2) + "\n", encoding='utf-8')

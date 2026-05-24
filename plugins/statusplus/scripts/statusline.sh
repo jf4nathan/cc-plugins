@@ -142,26 +142,35 @@ fi
 
 # Detect terminal width. Claude Code runs the statusline with stdin piped, so the
 # script has no controlling TTY of its own — `tput cols` returns 80 and `/dev/tty`
-# is "not a tty". Walk up the parent process chain to find a TTY and read its size.
+# is "not a tty". On macOS/Linux, walk up the parent process chain to find a TTY
+# and read its size. On Windows (MINGW/Git Bash), use PowerShell instead.
 # Claude Code drops any statusline row whose visible width exceeds the render area,
 # so we truncate to fit and keep the leftmost (most useful) content visible.
 term_cols=""
-pid=$$
-for _ in 1 2 3 4 5 6 7 8; do
-    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-    if [ -z "$ppid" ] || [ "$ppid" = "0" ] || [ "$ppid" = "1" ]; then
-        break
-    fi
-    tty=$(ps -o tty= -p "$ppid" 2>/dev/null | tr -d ' ')
-    if [ -n "$tty" ] && [ "$tty" != "??" ] && [ -e "/dev/$tty" ]; then
-        term_cols=$(stty size <"/dev/$tty" 2>/dev/null | awk '{print $2}')
-        if [ -n "$term_cols" ] && [ "$term_cols" -gt 0 ] 2>/dev/null; then
-            break
-        fi
-        term_cols=""
-    fi
-    pid=$ppid
-done
+_uname=$(uname -s 2>/dev/null)
+case "$_uname" in
+    MINGW*|CYGWIN*|MSYS*)
+        term_cols=$(powershell.exe -NoProfile -Command '$Host.UI.RawUI.WindowSize.Width' 2>/dev/null | tr -d '\r\n ')
+        ;;
+    *)
+        pid=$$
+        for _ in 1 2 3 4 5 6 7 8; do
+            ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+            if [ -z "$ppid" ] || [ "$ppid" = "0" ] || [ "$ppid" = "1" ]; then
+                break
+            fi
+            tty=$(ps -o tty= -p "$ppid" 2>/dev/null | tr -d ' ')
+            if [ -n "$tty" ] && [ "$tty" != "??" ] && [ -e "/dev/$tty" ]; then
+                term_cols=$(stty size <"/dev/$tty" 2>/dev/null | awk '{print $2}')
+                if [ -n "$term_cols" ] && [ "$term_cols" -gt 0 ] 2>/dev/null; then
+                    break
+                fi
+                term_cols=""
+            fi
+            pid=$ppid
+        done
+        ;;
+esac
 [ -z "$term_cols" ] && term_cols="${COLUMNS:-120}"
 # Claude Code's render area is narrower than the host TTY — it reserves columns for
 # the input box border and right-side indicators. Empirically ~15 cols of chrome;
@@ -263,6 +272,7 @@ if [ -n "$effort" ]; then
     line2+=$(printf '  \033[34m[%s]\033[0m' "$effort")
 fi
 ctx_bar=$(python3 -c "
+import sys; sys.stdout.reconfigure(encoding='utf-8')
 pct = int('${ctx_pct}') if '${ctx_pct}'.isdigit() else 0
 tokens = int('${used_tokens}') if '${used_tokens}'.isdigit() else 0
 width = 12
@@ -308,6 +318,7 @@ fi
 # reset so color state can't leak.
 LINE1="$line1" LINE2="$line2" LINE3="$line3" COLS="$term_cols" python3 <<'PY'
 import os, re, sys, unicodedata
+sys.stdout.reconfigure(encoding='utf-8')
 
 ansi = re.compile(r"\x1b\[[0-9;]*m")
 
