@@ -22,8 +22,6 @@ chmod +x "$HOME/.claude/bin/statusline.sh" 2>/dev/null || true
 echo "Scripts installed."
 ```
 
-On Windows (MINGW/Git Bash), `chmod +x` is a no-op — the `|| true` keeps setup from failing.
-
 `statusline.sh`, `cost-display.py`, and `llm-summary.py` are copied to `~/.claude/bin/` so they survive plugin updates without requiring a re-run of setup. (`llm-summary.py` is dormant until the user runs `/statusplus:statusplus-llm-setup` — its presence alone adds no behavior.) The Stop/SessionStart/UserPromptSubmit hook scripts (`write-stop-epoch.py`, `clear-cost-baseline.py`) are invoked directly from the plugin root via `${CLAUDE_PLUGIN_ROOT}` in hooks.json, so they update automatically with the plugin.
 
 ### 2. Patch ~/.claude/settings.json with the statusLine block
