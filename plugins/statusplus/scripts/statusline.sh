@@ -4,7 +4,7 @@
 
 input=$(cat)
 # Parse all fields in a single python pass, output as unit-separator-delimited values.
-IFS=$'\x1f' read -r current_dir model_name ctx_pct effort session_id worktree over200k used_tokens <<< "$(echo "$input" | python3 -c "
+IFS=$'\x1f' read -r current_dir model_name ctx_pct effort session_id worktree over200k used_tokens total_tokens <<< "$(echo "$input" | python3 -c "
 import sys, json, re
 d = json.load(sys.stdin)
 ctx = d.get('context_window',{})
@@ -24,10 +24,16 @@ fields = [
     d.get('workspace',{}).get('git_worktree','') or '',
     '1' if d.get('exceeds_200k_tokens') else '',
     str(int(ctx.get('used_tokens',0))),
+    str(int(ctx.get('total_tokens',0))),
 ]
 print('\x1f'.join(fields))
 " 2>/dev/null)"
 ctx_pct_display="${ctx_pct:-?}"
+
+overflow_flag=""
+if [ "${total_tokens:-0}" -gt 0 ] && [ "${used_tokens:-0}" -gt "$total_tokens" ] 2>/dev/null; then
+    overflow_flag="1"
+fi
 
 case "$effort" in
     low)    effort="lo"  ;;
@@ -266,7 +272,11 @@ fi
 # Line 2: model + effort + ctx + cost + start_ts + age
 line2=""
 if [ -n "$model_name" ]; then
-    line2+=$(printf '\033[34m%s\033[0m' "$model_name")
+    if [ -n "$overflow_flag" ]; then
+        line2+=$(printf '\033[1;31m⚠\033[0m \033[34m%s\033[0m' "$model_name")
+    else
+        line2+=$(printf '\033[34m%s\033[0m' "$model_name")
+    fi
 fi
 if [ -n "$effort" ]; then
     line2+=$(printf '  \033[34m[%s]\033[0m' "$effort")
@@ -275,6 +285,7 @@ ctx_bar=$(python3 -c "
 import sys; sys.stdout.reconfigure(encoding='utf-8')
 pct = int('${ctx_pct}') if '${ctx_pct}'.isdigit() else 0
 tokens = int('${used_tokens}') if '${used_tokens}'.isdigit() else 0
+total = int('${total_tokens}') if '${total_tokens}'.isdigit() else 0
 width = 12
 filled = round(width * pct / 100)
 bar = '▓' * filled + '▒' * (width - filled)
@@ -284,7 +295,11 @@ elif tokens >= 200000:
     color = '33'
 else:
     color = '35'
-print(f'\033[{color}m{bar} {pct}%\033[0m')
+overflow = ''
+if total > 0 and tokens > total:
+    overflow_pct = round((tokens - total) / total * 100)
+    overflow = f' \033[1;31m⚠ +{overflow_pct}%\033[0m'
+print(f'\033[{color}m{bar} {pct}%\033[0m{overflow}')
 " 2>/dev/null)
 line2+="  ${ctx_bar:-ctx:${ctx_pct_display}%}"
 if [ -n "$session_cost" ]; then
