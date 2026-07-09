@@ -13,6 +13,8 @@ Run all three steps in order. Do not skip step 2.
 
 ### 1. Copy scripts to ~/.claude/bin/
 
+> **Windows (Git Bash / WSL) note:** Before running the bash block below, confirm bash is on your PATH. In PowerShell: `(Get-Command bash).Source`. Use that path if the script can't find bash.
+
 ```bash
 mkdir -p "$HOME/.claude/bin"
 cp "${CLAUDE_PLUGIN_ROOT}/scripts/statusline.sh"   "$HOME/.claude/bin/statusline.sh"
@@ -22,7 +24,7 @@ chmod +x "$HOME/.claude/bin/statusline.sh" 2>/dev/null || true
 echo "Scripts installed."
 ```
 
-`statusline.sh`, `cost-display.py`, and `llm-summary.py` are copied to `~/.claude/bin/` so they survive plugin updates without requiring a re-run of setup. (`llm-summary.py` is dormant until the user runs `/statusplus:statusplus-llm-setup` — its presence alone adds no behavior.) The Stop/SessionStart/UserPromptSubmit hook scripts (`write-stop-epoch.py`, `clear-cost-baseline.py`) are invoked directly from the plugin root via `${CLAUDE_PLUGIN_ROOT}` in hooks.json, so they update automatically with the plugin.
+`statusline.sh`, `cost-display.py`, and `llm-summary.py` are copied to `~/.claude/bin/` so they survive plugin updates without requiring a re-run of setup. (`llm-summary.py` is dormant until the user runs `/statusplus:statusplus-llm-setup` — its presence alone adds no behavior.) The Stop/SessionStart hook scripts (`write-stop-epoch.py`, `clear-cost-baseline.py`) are invoked directly from the plugin root via `${CLAUDE_PLUGIN_ROOT}` in hooks.json, so they update automatically with the plugin.
 
 ### 2. Patch ~/.claude/settings.json with the statusLine block
 
@@ -105,7 +107,7 @@ The write step:
 
 ### 3. Tell the user to restart
 
-Tell them: "Restart Claude Code for the statusline to take effect. The plugin's hooks (Stop epoch writer, SessionStart/UserPromptSubmit cost baseline) are already active and need no further setup."
+Tell them: "Restart Claude Code for the statusline to take effect. The plugin's hooks (Stop epoch writer, SessionStart cost baseline) are already active and need no further setup."
 
 ## What the statusline shows
 
@@ -120,7 +122,11 @@ The "ago" counter is color-coded by staleness:
 - cyan - 2-8 hours
 - dim gray - over 8 hours
 
-Cost display resets to $0 when you run `/clear`.
+**Cost display rules:**
+- Cost shown is the lifetime accumulated cost for the current session (not a snapshot).
+- State lives in one atomic JSON accumulator per session — no partial reads.
+- `/clear` creates a one-shot reset marker that is consumed by the next render; the display returns to $0.00 for the new session.
+- `/resume` needs no cross-session transcript lookup or carry file — continuity is built into the accumulator.
 
 ## Reverting
 

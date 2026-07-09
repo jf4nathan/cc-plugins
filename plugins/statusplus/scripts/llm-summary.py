@@ -3,10 +3,17 @@
 
 Two modes:
   default (no args): read CC session JSON on stdin, print cached headline
-    instantly, and spawn a detached `--refresh` if the cache is stale.
+    instantly, and spawn a detached `--refresh` if the cache is stale and
+    not yet frozen.
   --refresh: do the actual API call sync, write the new headline to cache,
     exit. Always invoked detached from the statusline so the foreground
     call returns in single-digit ms.
+
+The headline is a *start-of-session anchor*: it summarizes the opening
+stretch of the transcript (first ~12000 chars of kept user/assistant text),
+not the current state. Because that window only grows until the budget is
+full and then never changes, a `.full` sentinel freezes refreshing once a
+full window has been summarized — one stable line per session.
 
 Config: ~/.claude/.statusplus/config.json (chmod 600, set by /statusplus:statusplus-llm-setup)
   {
@@ -14,11 +21,9 @@ Config: ~/.claude/.statusplus/config.json (chmod 600, set by /statusplus:statusp
     "endpoint":      "https://api.anthropic.com/v1/messages",
     "api_key":       "...",
     "model":         "claude-haiku-4-5-20251001",
-    "max_tokens":    30,
+    "max_tokens":    50,
     "timeout_s":     8,
-    "cache_ttl_s":   60,
-    "head_messages": 2,
-    "tail_messages": 6
+    "cache_ttl_s":   60
   }
 
 The helper is fully silent on any error. A misconfigured key, a network
@@ -35,27 +40,39 @@ import time
 import urllib.error
 import urllib.request
 
-# Slash commands that carry no topic signal and should be skipped when
-# collecting head messages. Matched case-insensitively against the first
-# whitespace-delimited token of a user message.
-_NOISY_COMMANDS = {
-    '/clear', '/model', '/effort', '/compact', '/cost',
-    '/config', '/vim', '/theme', '/status', '/memory',
-    '/help', '/reset', '/logout', '/login',
-}
-
 HOME = pathlib.Path(os.path.expanduser('~'))
 CONFIG = HOME / '.claude' / '.statusplus' / 'config.json'
 CACHE_DIR = HOME / '.claude' / '.statusplus' / 'cache'
 
-# Reinforced before AND after the input - small models routinely break the
-# word limit when told only once. See bearchat spec §10.
-PROMPT = (
-    "Summarize the user-AI conversation as a 5-word newspaper-style headline. "
-    "Exactly 5 words. Active voice. Specific nouns and verbs. "
-    "No quotes. No trailing punctuation. No filler words like 'work', "
-    "'task', 'help', or 'session'."
+# Transcript-building budget. Walk from the start of the session, keep
+# user/assistant text, and stop once the next prefixed line would exceed
+# this many chars. MSG_CAP truncates any single message first.
+BUDGET = 12000
+MSG_CAP = 800
+
+# User turns whose text starts with one of these carry no topic signal
+# (harness-injected wrappers, interrupts, bash plumbing). startswith()
+# takes the tuple directly.
+_NOISE_PREFIXES = (
+    '<local-command',
+    '<command-',
+    'Caveat:',
+    '<system-reminder',
+    '<bash-input',
+    '<bash-stdout',
+    '[Request interrupted',
 )
+
+SYSTEM_PROMPT = 'You write terse one-line summaries of coding sessions.'
+
+# Smart-quote / dash / ellipsis -> ASCII. Keeps cache files cp1252-safe on
+# Windows and avoids double-encoding bugs with LLM-emitted punctuation.
+_UNICODE = {
+    '‘': "'", '’': "'",   # curly single quotes
+    '“': '"', '”': '"',   # curly double quotes
+    '–': '-', '—': '-',   # en/em dashes
+    '…': '...',                 # ellipsis
+}
 
 
 def load_config():
@@ -67,6 +84,10 @@ def load_config():
 
 def cache_path(sid):
     return CACHE_DIR / f'{sid}.summary'
+
+
+def full_marker(sid):
+    return CACHE_DIR / f'{sid}.full'
 
 
 def read_cache(sid):
@@ -89,44 +110,32 @@ def write_cache(sid, text):
         pass
 
 
-def prune_cache(max_age_days=14):
-    """Remove cache files older than max_age_days. Best-effort."""
-    cutoff = time.time() - max_age_days * 86400
+def freeze(sid):
+    """Mark this session's window as full so we stop refreshing."""
     try:
-        for p in CACHE_DIR.glob('*.summary'):
-            try:
-                if p.stat().st_mtime < cutoff:
-                    p.unlink()
-            except Exception:
-                pass
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        m = full_marker(sid)
+        m.write_text('1', encoding='utf-8')
+        m.chmod(0o600)
     except Exception:
         pass
 
 
-def _parse_msg(line):
-    """Parse one JSONL line. Return (role, text[:600]) or None."""
+def prune_cache(max_age_days=14):
+    """Remove cache + sentinel files older than max_age_days. Best-effort.
+    Sentinels are pruned alongside summaries so a long-resumed session
+    doesn't lose its summary yet keep a stale .full that blocks refresh."""
+    cutoff = time.time() - max_age_days * 86400
     try:
-        rec = json.loads(line)
+        for pat in ('*.summary', '*.full'):
+            for p in CACHE_DIR.glob(pat):
+                try:
+                    if p.stat().st_mtime < cutoff:
+                        p.unlink()
+                except Exception:
+                    pass
     except Exception:
-        return None
-    msg = rec.get('message') or {}
-    role = msg.get('role') or rec.get('type') or ''
-    if role not in ('user', 'assistant'):
-        return None
-    content = msg.get('content')
-    if isinstance(content, list):
-        text = ' '.join(
-            blk.get('text', '') for blk in content
-            if isinstance(blk, dict) and blk.get('type') == 'text'
-        )
-    elif isinstance(content, str):
-        text = content
-    else:
-        return None
-    text = ' '.join(text.split()).strip()
-    if not text:
-        return None
-    return role, text[:600]
+        pass
 
 
 def _resolve_transcript(path):
@@ -150,85 +159,125 @@ def _resolve_transcript(path):
     return None
 
 
-def build_transcript(path, head_n=2, tail_n=6):
-    """Return transcript excerpt as `role: text` lines for LLM context.
+def _iter_messages(path):
+    """Yield (role, text) for user/assistant records in file order.
 
-    Collects the first head_n messages (goal anchor) and last tail_n messages
-    (current state). Deduplicates when windows overlap (short sessions).
-    Inserts a separator line between the two blocks when they are non-contiguous.
-    head_n=0 gives pure tail-only behaviour (backwards compatible).
+    Skips isMeta records. For list content, keeps only text blocks (drops
+    thinking, tool_use, tool_result). Collapses internal whitespace so each
+    message stays a single line. Streams line-by-line — the caller breaks
+    early once the budget fills, so we never read the whole (often huge) file.
     """
-    if not path:
-        return ''
+    with open(path, 'rb') as f:
+        for raw in f:
+            try:
+                rec = json.loads(raw)
+            except Exception:
+                continue
+            if rec.get('isMeta'):
+                continue
+            msg = rec.get('message') or {}
+            if msg.get('isMeta'):
+                continue
+            role = msg.get('role') or rec.get('type') or ''
+            if role not in ('user', 'assistant'):
+                continue
+            content = msg.get('content')
+            if isinstance(content, list):
+                text = ' '.join(
+                    blk.get('text', '') for blk in content
+                    if isinstance(blk, dict) and blk.get('type') == 'text'
+                )
+            elif isinstance(content, str):
+                text = content
+            else:
+                continue
+            text = ' '.join(text.split()).strip()
+            if not text:
+                continue
+            yield role, text
+
+
+def build_transcript(path):
+    """Walk from the start of the session. Return (transcript, budget_full).
+
+    budget_full is True only when we stopped because the next line would
+    exceed BUDGET — not when the file simply ran out of messages. A short
+    session (window never filled) stays unfrozen so it keeps refreshing as
+    more messages append.
+
+    budget_full is forced False when the transcript came from the fallback
+    (sibling .jsonl): a fresh concurrent session whose own file isn't
+    flushed yet would otherwise freeze a *sibling session's* summary
+    permanently. Unfrozen, the wrong line self-heals on the next TTL
+    refresh once the session's own transcript exists.
+    """
+    resolved = _resolve_transcript(path)
+    if not resolved:
+        return '', False
+    is_fallback = not (path and pathlib.Path(path).exists())
+    try:
+        total = 0
+        parts = []
+        budget_full = False
+        for role, text in _iter_messages(str(resolved)):
+            if role == 'user' and text.startswith(_NOISE_PREFIXES):
+                continue
+            prefix = 'USER: ' if role == 'user' else 'ASSISTANT: '
+            line = prefix + text[:MSG_CAP]
+            if total + len(line) > BUDGET:
+                budget_full = True
+                break
+            parts.append(line)
+            total += len(line)
+        return '\n'.join(parts), budget_full and not is_fallback
+    except Exception:
+        return '', False
+
+
+def find_title(path):
+    """Return the aiTitle of the last ai-title record, or '' if absent.
+
+    Separate full pass — the ai-title record is appended near the end of the
+    file, past where build_transcript stops, so we can't piggyback on it.
+    """
     resolved = _resolve_transcript(path)
     if not resolved:
         return ''
-    path = str(resolved)
+    title = ''
     try:
-        head_msgs = []
-        if head_n > 0:
-            with open(path, 'rb') as f:
-                blob = f.read(32 * 1024)
-            skip_next_assistant = False
-            for line in blob.splitlines():
-                parsed = _parse_msg(line)
-                if not parsed:
+        with open(str(resolved), 'rb') as f:
+            for raw in f:
+                if b'ai-title' not in raw:
                     continue
-                role, text = parsed
-                if role == 'user':
-                    first_token = text.split()[0].lower() if text.split() else ''
-                    if first_token in _NOISY_COMMANDS:
-                        skip_next_assistant = True
-                        continue
-                    skip_next_assistant = False
-                    head_msgs.append(parsed)
-                elif role == 'assistant':
-                    if skip_next_assistant:
-                        skip_next_assistant = False
-                        continue
-                    head_msgs.append(parsed)
-                if len(head_msgs) >= head_n:
-                    break
-
-        tail_msgs = []
-        if tail_n > 0:
-            with open(path, 'rb') as f:
-                f.seek(0, 2)
-                size = f.tell()
-                f.seek(max(0, size - 128 * 1024))
-                blob = f.read()
-            collected = []
-            for line in reversed(blob.splitlines()):
-                parsed = _parse_msg(line)
-                if parsed:
-                    collected.append(parsed)
-                    if len(collected) >= tail_n:
-                        break
-            tail_msgs = list(reversed(collected))
-
-        head_set = set(head_msgs)
-        tail_only = [m for m in tail_msgs if m not in head_set]
-
-        parts = []
-        if head_msgs:
-            parts.extend(f'{r}: {t}' for r, t in head_msgs)
-        if tail_only:
-            if head_msgs:
-                parts.append('[... session continues ...]')
-            parts.extend(f'{r}: {t}' for r, t in tail_only)
-        return '\n'.join(parts)
+                try:
+                    rec = json.loads(raw)
+                except Exception:
+                    continue
+                if rec.get('type') == 'ai-title':
+                    title = rec.get('aiTitle') or rec.get('title') or ''
     except Exception:
         return ''
+    return title
 
 
-def call_anthropic(cfg, conv):
+def build_user_prompt(transcript, title):
+    clause = f' (Claude\'s own title for it: "{title}")' if title else ''
+    return (
+        f'Below is the start of a Claude Code coding session{clause}. '
+        'In 14 words or fewer, state the high-level task or topic as a '
+        'single concise phrase — not a full sentence, no semicolons, no '
+        'lists. Output only the summary line: no quotes, no trailing '
+        'period, no preamble.\n\n'
+        f'TRANSCRIPT:\n{transcript}'
+    )
+
+
+def call_anthropic(cfg, user_prompt):
     body = json.dumps({
         'model': cfg['model'],
-        'max_tokens': int(cfg.get('max_tokens', 30)),
-        'system': PROMPT,
-        'messages': [
-            {'role': 'user', 'content': f'{conv}\n\n{PROMPT}'},
-        ],
+        'max_tokens': int(cfg.get('max_tokens', 50)),
+        'system': SYSTEM_PROMPT,
+        'messages': [{'role': 'user', 'content': user_prompt}],
     }).encode('utf-8')
     req = urllib.request.Request(
         cfg.get('endpoint') or 'https://api.anthropic.com/v1/messages',
@@ -248,13 +297,13 @@ def call_anthropic(cfg, conv):
     return ''
 
 
-def call_openai(cfg, conv):
+def call_openai(cfg, user_prompt):
     body = json.dumps({
         'model': cfg['model'],
-        'max_tokens': int(cfg.get('max_tokens', 30)),
+        'max_tokens': int(cfg.get('max_tokens', 50)),
         'messages': [
-            {'role': 'system', 'content': PROMPT},
-            {'role': 'user', 'content': f'{conv}\n\n{PROMPT}'},
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': user_prompt},
         ],
     }).encode('utf-8')
     req = urllib.request.Request(
@@ -274,24 +323,24 @@ def call_openai(cfg, conv):
     return (choices[0].get('message') or {}).get('content', '').strip()
 
 
-def sanitize(text):
-    text = (text or '').replace('\n', ' ').strip()
-    # Normalize Unicode punctuation to ASCII — keeps cache files cp1252-safe
-    # on Windows and avoids double-encoding bugs with smart quotes from LLMs.
-    for uc, asc in {
-        '‘': "'", '’': "'",  # curly single quotes
-        '“': '"', '”': '"',  # curly double quotes
-        '–': '-', '—': '-',  # en/em dashes
-        '…': '...',               # ellipsis
-    }.items():
+def postprocess(text):
+    """Normalize the model reply before storing.
+
+    unicode->ASCII, collapse whitespace to single spaces, strip a wrapping
+    matched quote pair, strip one trailing period, hard-cap to 14 words.
+    """
+    text = text or ''
+    for uc, asc in _UNICODE.items():
         text = text.replace(uc, asc)
-    while text and text[0] in '"\'`':
-        text = text[1:]
-    while text and text[-1] in '"\'`.,;:!?':
-        text = text[:-1]
-    if len(text) > 80:
-        text = text[:80].rstrip() + '...'
-    return text
+    text = ' '.join(text.split())
+    if len(text) >= 2 and text[0] in '"\'' and text[-1] == text[0]:
+        text = text[1:-1].strip()
+    if text.endswith('.'):
+        text = text[:-1].rstrip()
+    words = text.split()
+    if len(words) > 14:
+        text = ' '.join(words[:14])
+    return text.strip()
 
 
 def refresh(stdin_json):
@@ -301,22 +350,24 @@ def refresh(stdin_json):
     sid = stdin_json.get('session_id') or ''
     if not sid:
         return
-    head_n = int(cfg.get('head_messages', 2))
-    tail_n = int(cfg.get('tail_messages', 6))
-    conv = build_transcript(stdin_json.get('transcript_path') or '',
-                            head_n, tail_n)
-    if not conv:
+    path = stdin_json.get('transcript_path') or ''
+    transcript, budget_full = build_transcript(path)
+    if not transcript:
         return
+    title = find_title(path)
+    user_prompt = build_user_prompt(transcript, title)
     try:
         if cfg.get('provider') == 'openai':
-            text = call_openai(cfg, conv)
+            text = call_openai(cfg, user_prompt)
         else:
-            text = call_anthropic(cfg, conv)
+            text = call_anthropic(cfg, user_prompt)
     except Exception:
         return
-    text = sanitize(text)
+    text = postprocess(text)
     if text:
         write_cache(sid, text)
+        if budget_full:
+            freeze(sid)
     prune_cache()
 
 
@@ -369,6 +420,10 @@ def main():
         # Use stdout.buffer to avoid cp1252 UnicodeEncodeError on Windows.
         sys.stdout.buffer.write(cached.encode('utf-8') + b'\n')
         sys.stdout.buffer.flush()
+
+    # Frozen: a full start-window has been summarized; it can't change.
+    if full_marker(sid).exists():
+        return
 
     age = time.time() - mtime if mtime else float('inf')
     ttl = float(cfg.get('cache_ttl_s', 60))

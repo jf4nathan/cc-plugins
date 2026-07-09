@@ -78,7 +78,7 @@ Pinned Dependencies Receive Major Upgrades
   - purple — under 200k tokens (safe)
   - yellow — 200k–400k tokens (cost ramping)
   - bold red — over 400k tokens or over 80% of context window (whichever fires first)
-- `$X.YZ` cyan, resets when you `/clear`, picks up where you left off after `/resume`
+- `$X.YZ` cyan — lifetime accumulated cost for the current session, stored in one atomic JSON accumulator. Resets cleanly when you `/clear` (a one-shot reset marker is consumed by the next render); picks up where you left off after `/resume` with no cross-session carry file needed. Out-of-order renders are handled safely by the accumulator.
 - Session age `(Nm)` since Claude last responded, color-coded:
   - bold red <5m (prompt cache still warm)
   - yellow <30m
@@ -99,7 +99,9 @@ Wiring LLM Summaries Into Statusplus
 
 How it works:
 - Statusline renders fast. The headline is read from a per-session cache file (typical lookup: <10ms).
-- A **detached** background subprocess refreshes the cache (default TTL 60s) by sending a window of user/assistant messages to your chosen LLM. By default this is the **first 2 messages** (goal anchor) + **last 6 messages** (current state), merged and deduplicated — so the headline reflects both what the session started with and where it is now. Config-only slash commands (`/model`, `/effort`, `/clear`, etc.) are skipped so they don't pollute the anchor. The foreground statusline never blocks on the API.
+- A **detached** background subprocess refreshes the cache (default TTL 60s) by sending the opening window of the session transcript to your chosen LLM. The window is anchored at the **start of the session** (up to 12,000 prefixed characters; individual messages capped at 800 characters) so the headline stays stable and reflects what the session is fundamentally about, not just the last few exchanges. The foreground statusline never blocks on the API.
+- Once a full opening window has been summarized successfully, a `.full` marker is written. Subsequent renders serve the cached headline directly without calling the LLM again, keeping the headline frozen for the life of the session.
+- The generated headline is capped at **14 words**.
 - Misconfigured key, network blip, or empty transcript all collapse to "line 3 is empty" — never a broken statusline.
 
 **Cost shape.** With the default 60s cache TTL and ~500 tokens of conversation context per call, you're looking at roughly $0.001/hr at gpt-4.1-mini, or ~$0.0001/hr at gpt-4.1-nano. Anthropic's Haiku 4.5 sits in between. Idle sessions don't refresh — the next call only fires when something else triggers the statusline (a keystroke, a new response, the 30s `refreshInterval`).
@@ -150,7 +152,7 @@ For the full schema, see Anthropic's [statusline docs](https://code.claude.com/d
 
 ## How it works
 
-- **hooks.json** registers a `Stop` hook (writes last-response epoch) and a `SessionStart` hook (cost baseline reset on `/clear`, carry update on `/resume`, plus state pruning) — these activate automatically on install
+- **hooks.json** registers a `Stop` hook (writes last-response epoch) and a `SessionStart` hook (`/clear` writes a one-shot reset marker consumed by the next render; `/resume` continues from the session's own accumulator state without a cross-session carry file; plus state pruning) — these activate automatically on install
 - **setup skill** (`/statusplus:statusplus-setup`) copies `statusline.sh`, `cost-display.py`, and `llm-summary.py` to `~/.claude/bin/` and patches `~/.claude/settings.json` to wire it up. Hook scripts run directly from the plugin root, so they update with the plugin automatically. `llm-summary.py` is dormant until you run `/statusplus:statusplus-llm-setup`.
 - **update skill** (`/statusplus:statusplus-update`) re-syncs the deployed `statusline.sh`, `cost-display.py`, and `llm-summary.py` with the plugin's latest, prompting before overwriting any customizations; also patches `~/.claude/.statusplus/config.json` with any newly added default fields (without overwriting your existing values)
 - **llm-setup skill** (`/statusplus:statusplus-llm-setup`) configures the optional line 3 headline — provider, endpoint, API key, model. Opt-in; safe to ignore if you don't want a third line.
@@ -164,7 +166,7 @@ The plugin installs two hooks. Neither makes network calls or sends telemetry �
 | Hook | When it fires | What it does |
 |------|---------------|--------------|
 | `Stop` | After every Claude response | Writes a unix epoch to `~/.claude/.session_stops/<session_id>` so the statusline can compute "X ago". Async, non-blocking. |
-| `SessionStart` | When Claude Code starts (including after `/clear` and `/resume`) | If `source == 'clear'`, writes a cost baseline so `cost:$X.YZ` resets to `$0.00` for the new session. If `source == 'resume'`, writes a carry value so the displayed cost picks up where the prior session left off. Also prunes plugin state files older than 30 days. |
+| `SessionStart` | When Claude Code starts (including after `/clear` and `/resume`) | If `source == 'clear'`, writes a one-shot reset marker consumed by the next render so the display returns to `$0.00` for the new session. On `/resume`, the session's own accumulator continues unchanged — no cross-session carry file is written or read. Also prunes plugin state files older than 30 days. |
 
 All scripts live under `${CLAUDE_PLUGIN_ROOT}/scripts/` and are plain Python/bash you can read in seconds.
 

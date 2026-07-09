@@ -5,7 +5,7 @@ description: Sync the statusplus plugin's deployed scripts (~/.claude/bin/status
 
 # Statusline Update
 
-Re-deploy `statusline.sh`, `cost-display.py`, and `llm-summary.py` from the plugin to `~/.claude/bin/`. Use this after upgrading the plugin (e.g. `/plugin marketplace update cc-plugins`) to pick up new script behavior.
+Re-deploy `statusline.sh`, `cost-display.py`, and `llm-summary.py` from the plugin to `~/.claude/bin/`. Use this after upgrading the plugin (e.g. `/plugin marketplace update cc-plugins`) to pick up new script behavior. Run again any time with `/statusplus:statusplus-update`.
 
 ## Why this is a separate skill
 
@@ -17,7 +17,7 @@ Run all steps in order. Any non-trivial divergence between the deployed copy and
 
 ### 1. Check what would change
 
-For each of `statusline.sh` and `cost-display.py`, determine whether the deployed file matches, is missing, or differs from the plugin's copy.
+For each of `statusline.sh`, `cost-display.py`, and `llm-summary.py`, determine whether the deployed file matches, is missing, or differs from the plugin's copy.
 
 ```bash
 python3 - <<'PY'
@@ -105,40 +105,34 @@ Pass the file names the user approved (and any `MISSING` files) as positional ar
 
 ### 4. Patch config.json with any missing fields
 
-If `~/.claude/.statusplus/config.json` exists, add any fields that are present in the current defaults but missing from the user's config. Never overwrite existing values.
+If `~/.claude/.statusplus/config.json` exists, migrate it to current defaults. Adds missing fields, upgrades the stale `max_tokens: 30` default to `50`, and removes the deprecated `head_messages` and `tail_messages` keys. Unknown keys are preserved unchanged.
 
 ```bash
 python3 - <<'PY'
 import json, os, pathlib
 
-DEFAULTS = {
-    "head_messages": 2,
-    "tail_messages": 6,
-    "max_tokens": 30,
-    "timeout_s": 8,
-    "cache_ttl_s": 60,
-}
-
 p = pathlib.Path(os.path.expanduser("~/.claude/.statusplus/config.json"))
 if not p.exists():
     print("NO_CONFIG")
 else:
-    cfg = json.loads(p.read_text(encoding='utf-8'))
-    added = {}
-    for k, v in DEFAULTS.items():
-        if k not in cfg:
-            cfg[k] = v
-            added[k] = v
-    if added:
-        p.write_text(json.dumps(cfg, indent=2) + "\n", encoding='utf-8')
-        print("PATCHED: " + ", ".join(f"{k}={v}" for k, v in added.items()))
-    else:
-        print("CONFIG_OK")
+    config = json.loads(p.read_text(encoding='utf-8'))
+    defaults = {
+        "max_tokens": 50,
+        "timeout_s": 8,
+        "cache_ttl_s": 60,
+    }
+    for key, value in defaults.items():
+        config.setdefault(key, value)
+    if config.get("max_tokens") == 30:
+        config["max_tokens"] = 50
+    config.pop('head_messages', None)
+    config.pop('tail_messages', None)
+    p.write_text(json.dumps(config, indent=2) + "\n", encoding='utf-8')
+    print("CONFIG_MIGRATED")
 PY
 ```
 
-- `PATCHED`: tell the user which fields were added and their values.
-- `CONFIG_OK`: no output needed, config was already complete.
+- `CONFIG_MIGRATED`: config was written (idempotent — safe to re-run).
 - `NO_CONFIG`: skip silently — they haven't configured the LLM headline.
 
 ### 5. Tell the user the result
